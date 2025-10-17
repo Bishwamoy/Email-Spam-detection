@@ -1,84 +1,73 @@
-# Email-Spam-detection
-Windows one-click email spam detector. Fetches mail via IMAP, trains a TF-IDF ensemble on INBOX+Spam, evaluates, then classifies INBOX only. Exports per-account CSV/TXT/XLSX and reusable artifacts, plus a utility to re-classify any saved Inbox_Mails file.
+# Email Spam Detection (IMAP + ML, one-click)
 
-# Email-Spam-detection
-Windows one-click email spam detector. Fetches mail via IMAP, trains a TF-IDF ensemble on INBOX+Spam, evaluates, then classifies INBOX only (no cheating). Exports per-account CSV/TXT/XLSX and reusable artifacts, plus a utility to re-classify any saved Inbox_Mails file.
+End‑to‑end project that:
+1) **Fetches emails over IMAP** (Gmail or any IMAP server) from your **INBOX** and **Spam** folders
+2) **Builds a labeled dataset** automatically (`label=1` for Spam folder, `0` for Inbox)
+3) **Trains an accurate ensemble** (TF‑IDF + LinearSVC + Calibrated Logistic + handcrafted features)
+4) **Evaluates** with PR/ROC/Calibration plots
+5) **Runs live prediction** on *new* INBOX emails (optionally writes an IMAP flag or moves them to Spam on request)
 
-1) What you’ll need
-Python 3.10+ in PATH (python --version)
-Gmail App Password (since IMAP with 2FA needs it)
-Google Account → Security → 2-Step Verification → App passwords → type “IMAP” → copy the 16-char password (no spaces).
-IMAP enabled in Gmail (Settings → See all settings → Forwarding and POP/IMAP → Enable IMAP)
+> Credentials are asked at runtime (email + App Password). **Nothing is stored** unless you explicitly pass `--save-creds` (off by default).
 
-2) Get the code
-# PowerShell or CMD
-git clone <your-repo-url> EMAIL-SPAM
-cd EMAIL-SPAM
+---
 
-3) First-time setup (creates venv + installs deps)
+## Quick start (Windows PowerShell, VS Code friendly)
 
-Option A — simplest (Windows)
-Double-click start.bat (or run it from terminal):
-start.bat
-This will:
-Create .venv
-Install packages from requirements.txt
-Launch one_click_plus_classify.py interactively
-
-Option B — manual (any OS)
+```powershell
+# 1) Create & activate a venv
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\Activate.ps1
 
-4) Run the one-click pipeline
-.\.venv\Scripts\python.exe one_click_plus_classify.py
-You’ll be asked:
-IMAP host: imap.gmail.com
-Inbox folder: INBOX
-Spam folder: [Gmail]/Spam
-Fetch limits: e.g., 50 / 50
-Mailbox action: press Enter (skip)
-Email for outputs: enter the same Gmail (used to name the output folder)
-When prompted for email and App Password, paste both (16 chars, no spaces).
-What happens:
-Fetches INBOX (ham) + Spam (spam) → builds dataset.csv
-Balances data → trains TF-IDF ensemble → saves artifacts_v2/
-Evaluates (F1/ROC/CM) → Predicts on INBOX only
-Writes clean reports to outputs/<your_email_bucket>/
-Auto-classifies the freshly exported Inbox_Mails.* using the just-trained artifacts, writing:
-Inbox_Mails_Classified.[csv|txt|xlsx]
+# 2) Install deps
+pip install --upgrade pip
+pip install -r requirements.txt
 
-5) Where to find your results
-outputs/
-  <your_email_bucket>/
-    Inbox_Mails.[csv|txt|xlsx]
-    Spam_Mails.[csv|txt|xlsx]
-    Live_Predictions.[csv|txt|xlsx]
-    Inbox_Mails_Classified.[csv|txt|xlsx]   ← final decisions (Spam / Not Spam)
-runs/
-  <timestamp>/
-    data/… , artifacts_v2/… , artifacts/…
-<your_email_bucket> is a safe folder name like bishwamoychowdhury_gmail_com.
+# 3) Fetch a small dataset (e.g., 500 from INBOX, 500 from Spam)
+python fetch_emails.py --host imap.gmail.com --inbox INBOX --spam "[Gmail]/Spam" --limit-inbox 500 --limit-spam 500 --out data/dataset.csv
 
-6) Re-classify later (no IMAP, offline)
-If you already have outputs and a trained model, you can classify again (e.g., after editing the CSV) without re-fetching or retraining:
-.\.venv\Scripts\python.exe classify_inbox_file.py
-Prompts:
-  Artifacts folder: e.g., runs\2025-10-17_22-25-34\artifacts_v2
-  Email (to locate outputs subfolder): your Gmail
-  (Optional) Path to Inbox_Mails.[csv|xlsx|txt] (press Enter to auto-discover)
+# 4) Train (holds out a test split, calibrates, finds best threshold)
+python train_tfidf_ensemble.py --data data/dataset.csv --text-col text --label-col label --subject-col subject --from-col from --reply-to-col reply_to
 
-7) Multiple accounts (kept separate)
-Each run asks “Save outputs under which email” → results go to a unique folder per account. Nothing gets overwritten across accounts.
+# 5) Evaluate (prints metrics + saves plots under artifacts/plots/)
+python evaluate.py --model artifacts/model.joblib --vectorizer artifacts/vectorizer.joblib --test-csv artifacts/test.csv
 
-8) Common fixes
-AUTHENTICATIONFAILED: wrong email or App Password; ensure IMAP is enabled.
-openpyxl missing: script auto-installs; CSV/TXT are still written regardless.
-Model/vectorizer mismatch: the repo already uses the saved vectorizer from the same artifacts folder; always point classification to the artifacts generated by the one-click run that produced your outputs.
+# 6) Predict on *new* INBOX mail (no changes to mailbox by default)
+python predict_live.py --host imap.gmail.com --inbox INBOX --limit 200 --output artifacts/live_preds.csv
+```
 
-9) Notes
-This is a batch workflow (fetch → train → evaluate → classify). No realtime listener in this streamlined setup.
-The final threshold (from validation) is stored in threshold.json; higher threshold = fewer false positives.
-This is a batch workflow (fetch → train → evaluate → classify). No realtime listener in this streamlined setup.
+### Optional (apply actions to mailbox)
+Add `--apply "flag:\Seen"` to mark predicted spam as seen, or `--apply "move:[Gmail]/Spam"` to move them to Spam.  
+(Use with caution; test first without `--apply`.)
 
-The final threshold (from validation) is stored in threshold.json; higher threshold = fewer false positives.
+```powershell
+python predict_live.py --host imap.gmail.com --inbox INBOX --limit 200 --output artifacts/live_preds.csv --apply "move:[Gmail]/Spam" --min-prob 0.97
+```
+
+---
+
+## Gmail notes
+- Create a **16‑character App Password** (Google Account → Security → 2‑Step Verification → App Passwords → “Mail” on “Windows Computer”).  
+- IMAP must be ON in Gmail settings → Forwarding and POP/IMAP.  
+- Login with your **email** and that **App Password** (not your normal password).
+
+## Privacy & Safety
+- The scripts **prompt** for credentials and keep them in memory only.  
+- Pass `--save-creds` only if you understand the risk; it saves to `.env` in plain text (off by default).
+
+---
+
+## Folder layout
+- `fetch_emails.py` — IMAP fetcher → CSV (INBOX = ham, Spam folder = spam)
+- `train_tfidf_ensemble.py`, `evaluate.py`, `predict.py` — ML pipeline
+- `predict_live.py` — fetch latest INBOX, run model, (optionally) act on results
+- `utils_text.py` — normalization & handcrafted features
+- `imap_utils.py` — IMAP helpers (robust parsing, HTML→text, actions)
+- `requirements.txt` — deps (classical ML + IMAP)
+- `run_one_click.ps1` — guided pipeline: fetch → train → eval → live predict
+
+---
+
+## Tuning tips
+- Prefer **char 3–5 n‑grams** + **word 1–2** (already set) for obfuscations.
+- Use `--target-precision` in `evaluate.py` if false positives are costly.
+- Re‑train weekly; new spam patterns drift.
